@@ -1,0 +1,10 @@
+[package]
+name = "adhesion"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "adhesion"
+crate-type = ["lib"]
+
+[dependencies]
