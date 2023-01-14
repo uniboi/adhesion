@@ -18,6 +18,7 @@ pub struct HTTPServer {
     pub port: u64,
     pub listeners: Arc<HashMap<Route, HTTPListener>>,
     pub default_404_listener: Arc<Option<HTTPListener>>,
+    pub threads: usize,
 }
 
 pub struct HTTPStatus {
@@ -55,7 +56,7 @@ impl HTTPServer {
     pub fn listen(&self) {
         let listener = TcpListener::bind(format!("{}:{}", self.address, self.port))
             .expect("failed binding to socket!");
-        let pool = ThreadPool::new(5);
+        let pool = ThreadPool::new(self.threads);
 
         println!("listening on http://{}:{}", self.address, self.port);
 
