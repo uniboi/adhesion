@@ -14,7 +14,7 @@ pub type HTTPListener<T> = fn(
     &T,
 ) -> HTTPResponse;
 
-pub struct HTTPServer<T> {
+pub struct HTTPServer<T: Clone + std::marker::Sync + std::marker::Send + 'static> {
     pub address: String,
     pub port: u64,
     pub listeners: Arc<HashMap<Route, HTTPListener<T>>>,
