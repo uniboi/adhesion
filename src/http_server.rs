@@ -7,18 +7,20 @@ use std::{
 
 use crate::thread_pool::ThreadPool;
 
-pub type HTTPListener = fn(
+pub type HTTPListener<T> = fn(
     &HashMap<&str, &str>, /* headers */
     &String,              /* body */
     &HashMap<&str, &str>, /* query params */
+    &T,
 ) -> HTTPResponse;
 
-pub struct HTTPServer {
+pub struct HTTPServer<T> {
     pub address: String,
     pub port: u64,
-    pub listeners: Arc<HashMap<Route, HTTPListener>>,
-    pub default_404_listener: Arc<Option<HTTPListener>>,
+    pub listeners: Arc<HashMap<Route, HTTPListener<T>>>,
+    pub default_404_listener: Arc<Option<HTTPListener<T>>>,
     pub threads: usize,
+    pub passthrough: T,
 }
 
 pub struct HTTPStatus {
@@ -52,7 +54,7 @@ pub enum HTTPMethod {
     INVALID,
 }
 
-impl HTTPServer {
+impl<T: Clone + std::marker::Sync + std::marker::Send + 'static> HTTPServer<T> {
     pub fn listen(&self) {
         let listener = TcpListener::bind(format!("{}:{}", self.address, self.port))
             .expect("failed binding to socket!");
@@ -63,13 +65,15 @@ impl HTTPServer {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    let ref_counted_listeners = Arc::clone(&self.listeners);
-                    let ref_counted_404_handler = Arc::clone(&self.default_404_listener);
+                    let cloned_listeners = Arc::clone(&self.listeners);
+                    let cloned_404_handler = Arc::clone(&self.default_404_listener);
+                    let pt = self.passthrough.clone();
                     pool.execute(move || {
-                        HTTPServer::handle_stream(
+                        HTTPServer::<T>::handle_stream(
                             &stream,
-                            ref_counted_listeners,
-                            ref_counted_404_handler,
+                            cloned_listeners,
+                            cloned_404_handler,
+                            &pt,
                         )
                     });
                 }
@@ -80,8 +84,9 @@ impl HTTPServer {
 
     fn handle_stream(
         stream: &TcpStream,
-        listeners: Arc<HashMap<Route, HTTPListener>>,
-        default_404_handler: Arc<Option<HTTPListener>>,
+        listeners: Arc<HashMap<Route, HTTPListener<T>>>,
+        default_404_handler: Arc<Option<HTTPListener<T>>>,
+        passthrough: &T,
     ) {
         let mut reader = BufReader::new(stream);
         let mut request = String::new(); // string to be fed bytes of the stream
@@ -92,7 +97,7 @@ impl HTTPServer {
                 Ok(line) => size = line,
                 Err(error) => {
                     println!("fatal error reading request stream: {}", error);
-                    send_400_default_response(&stream); // TODO: test if response is being sent
+                    HTTPServer::<T>::send_400_default_response(stream); // TODO: test if response is being sent
                     return;
                 }
             }
@@ -106,7 +111,7 @@ impl HTTPServer {
         let lines: Vec<&str> = request.split("\n").collect();
 
         if lines.len() < 3 {
-            send_400_default_response(stream);
+            HTTPServer::<T>::send_400_default_response(stream);
             return;
         }
 
@@ -128,7 +133,7 @@ impl HTTPServer {
 
         let context: Vec<&str> = lines[0].split(" ").collect();
         if context.len() < 3 {
-            send_400_default_response(stream);
+            HTTPServer::<T>::send_400_default_response(stream);
             return;
         }
 
@@ -185,15 +190,15 @@ impl HTTPServer {
                 "PATCH" => HTTPMethod::PATCH,
                 &_ => {
                     // end stream now
-                    send_400_default_response(stream);
+                    HTTPServer::<T>::send_400_default_response(stream);
                     HTTPMethod::INVALID
                 }
             },
             location: String::from(trimmed_location),
         }) {
-            Some(listener) => listener(&headers, &body, &query_params),
+            Some(listener) => listener(&headers, &body, &query_params, passthrough),
             None => match *default_404_handler {
-                Some(ref handler) => handler(&headers, &body, &query_params),
+                Some(ref handler) => handler(&headers, &body, &query_params, passthrough),
                 None => get_404_default_response(),
             },
         };
@@ -204,7 +209,7 @@ impl HTTPServer {
         //     println!("{}", byte as char);
         // }
 
-        HTTPServer::close_stream(stream, &response)
+        HTTPServer::<T>::close_stream(stream, &response)
     }
 
     fn close_stream(mut stream: &TcpStream, response: &HTTPResponse) {
@@ -221,6 +226,23 @@ impl HTTPServer {
             )
             .unwrap();
         stream.flush().unwrap();
+    }
+
+    fn send_400_default_response(stream: &TcpStream) {
+        HTTPServer::<T>::close_stream(
+            stream,
+            &HTTPResponse {
+                status: HTTPStatus {
+                    status: 400,
+                    reason: String::from("Bad Request"),
+                },
+                body: String::from("Received invalid data"),
+                headers: HashMap::from([(
+                    String::from("Content-Length"),
+                    21.to_string(), /* 21 : length of string `Received invalid data` */
+                )]),
+            },
+        );
     }
 }
 
@@ -244,23 +266,6 @@ fn get_404_default_response() -> HTTPResponse {
         )]),
         body: String::from("The requested resource hasn't been found on this server."),
     }
-}
-
-fn send_400_default_response(stream: &TcpStream) {
-    HTTPServer::close_stream(
-        stream,
-        &HTTPResponse {
-            status: HTTPStatus {
-                status: 400,
-                reason: String::from("Bad Request"),
-            },
-            body: String::from("Received invalid data"),
-            headers: HashMap::from([(
-                String::from("Content-Length"),
-                21.to_string(), /* 21 : length of string `Received invalid data` */
-            )]),
-        },
-    );
 }
 
 /// get a map with Content-Length prefilled
