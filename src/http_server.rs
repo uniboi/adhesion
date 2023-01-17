@@ -172,7 +172,7 @@ impl<T: Clone + std::marker::Sync + std::marker::Send + 'static> HTTPServer<T> {
         });
 
         let mut trimmed_location = location;
-        
+
         while trimmed_location.ends_with("/") && trimmed_location.len() > 1 {
             trimmed_location = &location[..trimmed_location.len() - 1];
         }
@@ -232,10 +232,7 @@ impl<T: Clone + std::marker::Sync + std::marker::Send + 'static> HTTPServer<T> {
         HTTPServer::<T>::close_stream(
             stream,
             &HTTPResponse {
-                status: HTTPStatus {
-                    status: 400,
-                    reason: String::from("Bad Request"),
-                },
+                status: HTTPStatus::new(400),
                 body: String::from("Received invalid data"),
                 headers: HashMap::from([(
                     String::from("Content-Length"),
@@ -245,6 +242,14 @@ impl<T: Clone + std::marker::Sync + std::marker::Send + 'static> HTTPServer<T> {
         );
     }
 }
+
+impl HTTPStatus {
+    fn new(code: u16) -> HTTPStatus {
+        HTTPStatus { status: code, reason: http_code_reason(code) }
+    }
+}
+
+// http server internal utils
 
 fn parse_headers(headers: &HashMap<String, String>) -> String {
     let mut converted: String = String::from("");
@@ -256,10 +261,7 @@ fn parse_headers(headers: &HashMap<String, String>) -> String {
 
 fn get_404_default_response() -> HTTPResponse {
     HTTPResponse {
-        status: HTTPStatus {
-            status: 404,
-            reason: String::from("Not Found"),
-        },
+        status: HTTPStatus::new(404),
         headers: HashMap::from([(
             String::from("Content-Length"),
             56.to_string(), /* 56 : length of string `The requested resource hasn't been found on this server.` */
@@ -268,10 +270,78 @@ fn get_404_default_response() -> HTTPResponse {
     }
 }
 
+// public utils
+
 /// get a map with Content-Length prefilled
 pub fn default_headers(content: &String) -> HashMap<String, String> {
     HashMap::from([(
         String::from("Content-Length"),
         content.len().to_owned().to_string(),
     )])
+}
+
+pub fn response_200(body: Option<String>) -> HTTPResponse {
+    let body = match body {Some(b) => b, None => String::from("")};
+    HTTPResponse { status: HTTPStatus::new(200), headers: default_headers(&body), body }
+}
+
+pub fn http_code_reason(code: u16) -> String {
+    let r: Option<&str> = match code {
+        100 => Some("Continue"),
+        101 => Some("Switching Protocols"),
+        103 => Some("Early Hints"),
+        200 => Some("OK"),
+        201 => Some("Created"),
+        202 => Some("Accepted"),
+        203 => Some("Non-Authoritative Information"),
+        204 => Some("No Content"),
+        205 => Some("Reset Content"),
+        206 => Some("Partial Content"),
+        300 => Some("Multiple Choices"),
+        301 => Some("Moved Permanently"),
+        302 => Some("Found"),
+        303 => Some("See Other"),
+        304 => Some("Not Modigied"),
+        307 => Some("Temporary Redirect"),
+        308 => Some("Permanent Redirect"),
+        400 => Some("Bad Request"),
+        401 => Some("Unauthorized"),
+        402 => Some("Payment Required"),
+        403 => Some("Forbidden"),
+        404 => Some("Not Found"),
+        405 => Some("Method not Allowed"),
+        406 => Some("Not Acceptable"),
+        407 => Some("Proxy Authentication Required"),
+        408 => Some("Request Timeout"),
+        409 => Some("Conflict"),
+        410 => Some("Gone"),
+        411 => Some("Length Required"),
+        412 => Some("Precondition Failed"),
+        413 => Some("Payload Too Large"),
+        414 => Some("URI Too Long"),
+        415 => Some("Unsupported Media Type"),
+        416 => Some("Range not Satisfiable"),
+        417 => Some("Expectation Failed"),
+        418 => Some("I'm a teapot"),
+        422 => Some("Unprocessable Entity"),
+        425 => Some("Too Early"),
+        426 => Some("Upgrade Required"),
+        428 => Some("Precondition Required"),
+        429 => Some("Too Many Requirests"),
+        431 => Some("Request Header Fields Too Large"),
+        451 => Some("Unavailable For Legal Reasons"),
+        500 => Some("Internal Server Error"),
+        501 => Some("Not Implemented"),
+        502 => Some("Bad Gateway"),
+        503 => Some("Service Unavailable"),
+        504 => Some("Gateway Timeout"),
+        505 => Some("HTTP Version Not Supported"),
+        506 => Some("Variant Also Negotiates"),
+        507 => Some("Insufficient Storage"),
+        508 => Some("Loop Detected"),
+        510 => Some("Not Extended"),
+        511 => Some("Network Authentication Required"),
+        _ => None,
+    };
+    String::from(r.expect("Invalid HTTP Status Code Provided"))
 }
