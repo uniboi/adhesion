@@ -17,7 +17,7 @@ pub type HTTPListener<T> = fn(
 pub struct HTTPServer<T: Clone + std::marker::Sync + std::marker::Send + 'static> {
     pub address: String,
     pub port: u64,
-    pub listeners: Arc<HashMap<Route, HTTPListener<T>>>,
+    pub listeners: Arc<HashMap<String, Route<T>>>,
     pub default_404_listener: Arc<Option<HTTPListener<T>>>,
     pub threads: usize,
     pub passthrough: T,
@@ -30,14 +30,13 @@ pub struct HTTPStatus {
 
 pub struct HTTPResponse {
     pub status: HTTPStatus,
-    pub body: String,
     pub headers: HashMap<String, String>,
+    pub body: String,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Route {
-    pub method: HTTPMethod,
-    pub location: String,
+pub struct Route<T: Clone + std::marker::Sync + std::marker::Send + 'static> {
+    pub methods: Vec<HTTPMethod>,
+    pub listener: HTTPListener<T>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,7 +83,7 @@ impl<T: Clone + std::marker::Sync + std::marker::Send + 'static> HTTPServer<T> {
 
     fn handle_stream(
         stream: &TcpStream,
-        listeners: Arc<HashMap<Route, HTTPListener<T>>>,
+        listeners: Arc<HashMap<String, Route<T>>>,
         default_404_handler: Arc<Option<HTTPListener<T>>>,
         passthrough: &T,
     ) {
@@ -177,29 +176,25 @@ impl<T: Clone + std::marker::Sync + std::marker::Send + 'static> HTTPServer<T> {
             trimmed_location = &location[..trimmed_location.len() - 1];
         }
 
-        let response = match listeners.get(&Route {
-            method: match context[0] {
-                "GET" => HTTPMethod::GET,
-                "HEAD" => HTTPMethod::HEAD,
-                "POST" => HTTPMethod::POST,
-                "PUT" => HTTPMethod::PUT,
-                "DELETE" => HTTPMethod::DELETE,
-                "CONNECT" => HTTPMethod::CONNECT,
-                "OPTION" => HTTPMethod::OPTION,
-                "TRACE" => HTTPMethod::TRACE,
-                "PATCH" => HTTPMethod::PATCH,
-                &_ => {
-                    // end stream now
-                    HTTPServer::<T>::send_400_default_response(stream);
-                    HTTPMethod::INVALID
+        let response = match listeners.get(&String::from(trimmed_location)) {
+            Some(route) => {
+                let method = get_method(context[0]);
+                if route.methods.contains(&method) {
+                    (route.listener)(&headers, &body, &query_params, passthrough)
+                } else {
+                    if method == HTTPMethod::INVALID {
+                        get_400_default_response()
+                    } else {
+                        get_405_default_response(trimmed_location, context[0])
+                    }
                 }
-            },
-            location: String::from(trimmed_location),
-        }) {
-            Some(listener) => listener(&headers, &body, &query_params, passthrough),
+            }
             None => match *default_404_handler {
                 Some(ref handler) => handler(&headers, &body, &query_params, passthrough),
-                None => get_404_default_response(),
+                None => match *default_404_handler {
+                    Some(ref handler) => handler(&headers, &body, &query_params, passthrough),
+                    None => get_404_default_response(),
+                },
             },
         };
 
@@ -229,23 +224,16 @@ impl<T: Clone + std::marker::Sync + std::marker::Send + 'static> HTTPServer<T> {
     }
 
     fn send_400_default_response(stream: &TcpStream) {
-        HTTPServer::<T>::close_stream(
-            stream,
-            &HTTPResponse {
-                status: HTTPStatus::new(400),
-                body: String::from("Received invalid data"),
-                headers: HashMap::from([(
-                    String::from("Content-Length"),
-                    21.to_string(), /* 21 : length of string `Received invalid data` */
-                )]),
-            },
-        );
+        HTTPServer::<T>::close_stream(stream, &get_400_default_response());
     }
 }
 
 impl HTTPStatus {
     fn new(code: u16) -> HTTPStatus {
-        HTTPStatus { status: code, reason: http_code_reason(code) }
+        HTTPStatus {
+            status: code,
+            reason: http_code_reason(code),
+        }
     }
 }
 
@@ -270,6 +258,37 @@ fn get_404_default_response() -> HTTPResponse {
     }
 }
 
+fn get_405_default_response(route: &str, method: &str) -> HTTPResponse {
+    let body = format!("Cannot {method} {route}");
+    HTTPResponse { status: HTTPStatus::new(405), headers: default_headers(&body), body }
+}
+
+fn get_400_default_response() -> HTTPResponse {
+    HTTPResponse {
+        status: HTTPStatus::new(400),
+        body: String::from("Received invalid data"),
+        headers: HashMap::from([(
+            String::from("Content-Length"),
+            21.to_string(), /* 21 : length of string `Received invalid data` */
+        )]),
+    }
+}
+
+fn get_method(raw: &str) -> HTTPMethod {
+    match raw {
+        "GET" => HTTPMethod::GET,
+        "HEAD" => HTTPMethod::HEAD,
+        "POST" => HTTPMethod::POST,
+        "PUT" => HTTPMethod::PUT,
+        "DELETE" => HTTPMethod::DELETE,
+        "CONNECT" => HTTPMethod::CONNECT,
+        "OPTION" => HTTPMethod::OPTION,
+        "TRACE" => HTTPMethod::TRACE,
+        "PATCH" => HTTPMethod::PATCH,
+        &_ => HTTPMethod::INVALID,
+    }
+}
+
 // public utils
 
 /// get a map with Content-Length prefilled
@@ -281,8 +300,15 @@ pub fn default_headers(content: &String) -> HashMap<String, String> {
 }
 
 pub fn response_200(body: Option<String>) -> HTTPResponse {
-    let body = match body {Some(b) => b, None => String::from("")};
-    HTTPResponse { status: HTTPStatus::new(200), headers: default_headers(&body), body }
+    let body = match body {
+        Some(b) => b,
+        None => String::from(""),
+    };
+    HTTPResponse {
+        status: HTTPStatus::new(200),
+        headers: default_headers(&body),
+        body,
+    }
 }
 
 pub fn http_code_reason(code: u16) -> String {
